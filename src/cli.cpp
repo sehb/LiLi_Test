@@ -1,11 +1,11 @@
 #include "info_matrix.h"
 
 #include <Eigen/Dense>
-#include <algorithm>
 #include <cstdlib>
-#include <iomanip>
 #include <iostream>
 #include <string>
+#include <tuple>
+#include <vector>
 
 using Vec3 = Eigen::Vector3d;
 
@@ -25,28 +25,29 @@ int main(int argc, char** argv) {
         else if (s == "--n" && i + 1 < argc) { n = std::atoi(argv[++i]); }
         else if (s == "--rel" && i + 1 < argc) { rel = std::atof(argv[++i]); }
         else if (s == "--abs" && i + 1 < argc) { abs_th = std::atof(argv[++i]); }
-        else { print_usage(argv[0]); return 1; }
+        else {
+            print_usage(argv[0]);
+            return 1;
+        }
     }
 
     std::vector<std::tuple<Vec3, Vec3, Vec3>> data;
-
     if (scene == "planar") {
-        std::uniform_real_distribution<double> unif(-1.0, 1.0);
-        std::mt19937_64 rng(1234567ULL);
-        const Vec3 normal(0.0, 0.0, 1.0);
         for (int i = 0; i < n; ++i) {
-            const double x = (double(i) / n) * 2.0 - 1.0;
-            const double y = ((i * 37) % 100) / 50.0 - 1.0;
-            data.emplace_back(Vec3(x, y, 0.0), Vec3(x, y, 0.0), normal);
+            const double x = static_cast<double>(i) / n * 2.0 - 1.0;
+            const double y = static_cast<double>((i * 37) % 101) / 50.0 - 1.0;
+            const Vec3 p(x, y, 0.0);
+            const Vec3 normal(0.0, 0.0, 1.0);
+            data.emplace_back(p, p, normal);
         }
     } else if (scene == "random") {
-        std::mt19937_64 rng(1234567ULL);
+        std::mt19937_64 rng(1234ULL);
         std::uniform_real_distribution<double> unif(-1.0, 1.0);
         std::uniform_real_distribution<double> ang(0.0, 2.0 * M_PI);
         for (int i = 0; i < n; ++i) {
             Vec3 p(unif(rng), unif(rng), unif(rng));
-            double theta = ang(rng);
-            double phi = ang(rng);
+            const double theta = ang(rng);
+            const double phi = ang(rng);
             Vec3 normal(std::cos(theta) * std::sin(phi),
                         std::sin(theta) * std::sin(phi),
                         std::cos(phi));
@@ -61,33 +62,21 @@ int main(int argc, char** argv) {
 
     InformationMatrixCalculator calc;
     for (const auto& it : data) {
-        Vec3 p, q, nrm;
-        std::tie(p, q, nrm) = it;
-        calc.addPointPlane(p, q, nrm);
+        Vec3 p, q, n;
+        std::tie(p, q, n) = it;
+        calc.addPointPlane(p, q, n);
     }
 
     const auto res = calc.analyzeDegeneracy(rel, abs_th);
-
     std::cout << "Scene: " << scene << " (N=" << n << ")\n";
-    std::cout << "Eigenvalues (ascending):\n";
-    for (int i = 0; i < res.eigenvalues.size(); ++i) {
-        std::cout << "  [" << i << "] = " << res.eigenvalues(i) << "\n";
+    std::cout << "min_eigenvalue=" << res.min_eigenvalue << "\n";
+    std::cout << "max_eigenvalue=" << res.max_eigenvalue << "\n";
+    std::cout << "condition_number=" << res.condition_number << "\n";
+    std::cout << "small_modes=" << res.small_indices.size() << "\n";
+    for (size_t k = 0; k < res.small_indices.size(); ++k) {
+        std::cout << "  mode=" << res.small_indices[k]
+                  << " type=" << res.small_classification[k]
+                  << " lambda=" << res.eigenvalues(res.small_indices[k]) << "\n";
     }
-    std::cout << "Min ev: " << res.min_eigenvalue << ", Max ev: " << res.max_eigenvalue << "\n";
-    std::cout << "Condition number: ";
-    if (std::isfinite(res.condition_number)) std::cout << res.condition_number << "\n";
-    else std::cout << "inf\n";
-
-    if (res.small_indices.empty()) {
-        std::cout << "No degenerate modes detected.\n";
-    } else {
-        std::cout << "Detected " << res.small_indices.size() << " degenerate modes:\n";
-        for (size_t k = 0; k < res.small_indices.size(); ++k) {
-            const int idx = res.small_indices[k];
-            std::cout << " - idx=" << idx << ", lambda=" << res.eigenvalues(idx)
-                      << ", type=" << res.small_classification[k] << "\n";
-        }
-    }
-
     return 0;
 }

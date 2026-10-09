@@ -22,10 +22,6 @@ public:
 
     void reset();
 
-    // Add one point-to-plane residual constraint:
-    // residual r = n^T * (R * p_src + t - q_tgt)
-    // with Jacobian
-    // J = [ n^T * (-R * [p_src]_x) , n^T ]
     void addPointPlane(const Eigen::Vector3d& p_src,
                        const Eigen::Vector3d& q_tgt,
                        const Eigen::Vector3d& n_tgt,
@@ -34,11 +30,9 @@ public:
 
     Eigen::Matrix<double, 6, 6> informationMatrix() const;
 
-    // Lower eigenvalues indicate a weakly observable direction.
     DegeneracyResult analyzeDegeneracy(double rel_threshold = 1e-3,
                                       double abs_threshold = 1e-9) const;
 
-    // Condition number of the accumulated information matrix.
     double conditionNumber() const;
 
 private:

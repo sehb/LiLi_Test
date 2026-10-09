@@ -52,21 +52,22 @@ DegeneracyResult InformationMatrixCalculator::analyzeDegeneracy(double rel_thres
 
     res.eigenvalues = solver.eigenvalues();
     res.eigenvectors = solver.eigenvectors();
-
     res.min_eigenvalue = res.eigenvalues.minCoeff();
     res.max_eigenvalue = res.eigenvalues.maxCoeff();
-    if (res.min_eigenvalue > 0) res.condition_number = res.max_eigenvalue / res.min_eigenvalue;
-    else res.condition_number = std::numeric_limits<double>::infinity();
+
+    if (res.min_eigenvalue > 0.0) {
+        res.condition_number = res.max_eigenvalue / res.min_eigenvalue;
+    } else {
+        res.condition_number = std::numeric_limits<double>::infinity();
+    }
 
     const double lambda_max = res.max_eigenvalue;
     const double rel_cut = rel_threshold * std::max(1.0, lambda_max);
 
-    // Collect small eigenvalues (ascending order from solver)
-    for (int i = 0; i < res.eigenvalues.size(); ++i) {
+    for (int i = 0; i < 6; ++i) {
         const double lambda = res.eigenvalues(i);
         if (lambda < rel_cut || lambda < abs_threshold) {
             res.small_indices.push_back(i);
-
             const Eigen::VectorXd v = res.eigenvectors.col(i);
             const double rot_norm = v.head<3>().norm();
             const double trans_norm = v.tail<3>().norm();
@@ -91,6 +92,6 @@ double InformationMatrixCalculator::conditionNumber() const {
     Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> solver(sym);
     const double min_ev = solver.eigenvalues().minCoeff();
     const double max_ev = solver.eigenvalues().maxCoeff();
-    if (min_ev > 0) return max_ev / min_ev;
+    if (min_ev > 0.0) return max_ev / min_ev;
     return std::numeric_limits<double>::infinity();
 }

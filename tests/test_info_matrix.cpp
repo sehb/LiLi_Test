@@ -6,7 +6,6 @@
 
 int main() {
     InformationMatrixCalculator calc;
-
     for (int i = 0; i < 200; ++i) {
         const double x = static_cast<double>(i) / 200.0;
         const double y = std::sin(static_cast<double>(i) * 0.37);
@@ -14,9 +13,7 @@ int main() {
 
         Eigen::Vector3d p(x, y, z);
         Eigen::Vector3d q = p;
-        Eigen::Vector3d n(1.0 / std::sqrt(3.0),
-                          1.0 / std::sqrt(3.0),
-                          1.0 / std::sqrt(3.0));
+        Eigen::Vector3d n(1.0 / std::sqrt(3.0), 1.0 / std::sqrt(3.0), 1.0 / std::sqrt(3.0));
         calc.addPointPlane(p, q, n);
     }
 

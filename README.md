@@ -1,23 +1,24 @@
 # LiLi_Test
 
-A compact C++/Eigen reference implementation for computing a 6×6 information matrix from point-to-plane residuals and detecting pose-estimation degeneracy using eigenvalue analysis.
+A C++/Eigen reference implementation for point-to-plane residual-based information analysis and LiLi degeneracy detection.
 
 ## Overview
 
-This project reflects the core idea behind Lie-theory-based degeneracy detection in LiDAR scan alignment:
+This repository implements the core ingredients of a LiLi-style degeneracy detector for 3D LiDAR scan alignment:
 
-- each point-to-plane correspondence produces a 1×6 Jacobian in the SE(3) tangent space,
-- accumulating J^T J yields the information matrix,
-- eigenvalue inspection reveals near-singular directions (degenerate modes),
-- the smallest eigenmodes are classified as rotation-dominated, translation-dominated, or mixed.
+- point-to-plane residuals
+- Jacobians in the SE(3) tangent space
+- information matrix accumulation
+- eigenvalue analysis of the 6×6 information matrix
+- classification of degenerate modes as rotation-dominated, translation-dominated, or mixed
 
-## Repository structure
+## Project structure
 
-- `include/info_matrix.h`: API and data structures.
-- `src/info_matrix.cpp`: point-to-plane information accumulation and degeneracy analysis.
-- `src/synthetic.cpp`: synthetic validation scenes for planar and non-planar geometry.
-- `tests/test_info_matrix.cpp`: smoke tests for the information matrix.
-- `CMakeLists.txt`: build configuration.
+- `include/info_matrix.h`: API
+- `src/info_matrix.cpp`: core implementation
+- `src/synthetic.cpp`: synthetic planar/random-scene validation
+- `tests/test_info_matrix.cpp`: smoke test
+- `CMakeLists.txt`: build config
 
 ## Build
 
@@ -35,14 +36,18 @@ cmake --build .
 ctest --output-on-failure
 ```
 
-## Jacobian used
+## Residual model
 
-The point-to-plane residual is
+For a point-to-plane correspondence,
 
 r = n^T (R p + t - q)
 
-and in the SE(3) tangent space the Jacobian is
+and the Jacobian wrt the SE(3) tangent vector is
 
-J = [ n^T (-R [p]_x),  n^T ]
+J = [ n^T (-R [p]_x), n^T ]
 
-This is intentionally simple and reference-oriented: it focuses on degeneracy detection logic rather than a full SLAM pipeline.
+Accumulating J^T J yields the information matrix used by LiLi.
+
+## Real-world extension
+
+This project is intentionally compact and reference-oriented. The natural next step is to integrate this into a full point-to-plane ICP pipeline and trigger a reject/downweight/update policy when the information matrix is near-singular.

@@ -16,14 +16,12 @@ std::vector<std::tuple<Vec3, Vec3, Vec3>> makePlanarScene(int n) {
     std::uniform_real_distribution<double> unif(-1.0, 1.0);
     std::vector<std::tuple<Vec3, Vec3, Vec3>> out;
     out.reserve(n);
-
     const Vec3 normal(0.0, 0.0, 1.0);
     for (int i = 0; i < n; ++i) {
         const double x = unif(rng);
         const double y = unif(rng);
-        const Vec3 p_src(x, y, 0.0);
-        const Vec3 q_tgt = p_src;
-        out.emplace_back(p_src, q_tgt, normal);
+        const Vec3 p = Vec3(x, y, 0.0);
+        out.emplace_back(p, p, normal);
     }
     return out;
 }
@@ -33,17 +31,15 @@ std::vector<std::tuple<Vec3, Vec3, Vec3>> makeRandom3DScene(int n) {
     std::uniform_real_distribution<double> ang(0.0, 2.0 * M_PI);
     std::vector<std::tuple<Vec3, Vec3, Vec3>> out;
     out.reserve(n);
-
     for (int i = 0; i < n; ++i) {
-        const Vec3 p_src(unif(rng), unif(rng), unif(rng));
-        const Vec3 q_tgt = p_src;
-        const double theta = ang(rng);
-        const double phi = ang(rng);
+        const Vec3 p(unif(rng), unif(rng), unif(rng));
+        double theta = ang(rng);
+        double phi = ang(rng);
         Vec3 normal(std::cos(theta) * std::sin(phi),
                     std::sin(theta) * std::sin(phi),
                     std::cos(phi));
         normal.normalize();
-        out.emplace_back(p_src, q_tgt, normal);
+        out.emplace_back(p, p, normal);
     }
     return out;
 }
@@ -55,6 +51,9 @@ void printDegeneracy(const std::string& name, const DegeneracyResult& r) {
         std::cout << " " << std::setw(12) << r.eigenvalues(i);
     }
     std::cout << "\n";
+    std::cout << "Min eigenvalue: " << r.min_eigenvalue << "\n";
+    std::cout << "Max eigenvalue: " << r.max_eigenvalue << "\n";
+    std::cout << "Condition number: " << r.condition_number << "\n";
 
     if (r.small_indices.empty()) {
         std::cout << "No degenerate modes detected.\n";
@@ -72,7 +71,7 @@ void printDegeneracy(const std::string& name, const DegeneracyResult& r) {
 
 int main() {
     {
-        auto data = makePlanarScene(200);
+        auto data = makePlanarScene(400);
         InformationMatrixCalculator calc;
         for (const auto& item : data) {
             Vec3 p, q, n;
@@ -82,13 +81,13 @@ int main() {
         const auto result = calc.analyzeDegeneracy(1e-3, 1e-9);
         printDegeneracy("Planar", result);
         if (result.small_indices.empty()) {
-            std::cerr << "Planar scene should be degenerate!\n";
+            std::cerr << "Planar scene should be degenerate.\n";
             return 1;
         }
     }
 
     {
-        auto data = makeRandom3DScene(500);
+        auto data = makeRandom3DScene(800);
         InformationMatrixCalculator calc;
         for (const auto& item : data) {
             Vec3 p, q, n;
