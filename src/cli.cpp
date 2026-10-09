@@ -3,6 +3,7 @@
 #include <Eigen/Dense>
 #include <cstdlib>
 #include <iostream>
+#include <random>
 #include <string>
 #include <tuple>
 #include <vector>
