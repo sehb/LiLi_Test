@@ -1,36 +1,48 @@
-#include "info_matrix.h"
+# LiLi_Test
 
-#include <Eigen/Dense>
-#include <iostream>
-#include <tuple>
+A compact C++/Eigen reference implementation for computing a 6x6 information matrix from point-to-plane residuals and detecting pose-estimation degeneracy using eigenvalue analysis.
 
-int main() {
-    InformationMatrixCalculator calc;
+## Overview
 
-    // well-conditioned 6D information: 3D random points w/ varied normals
-    for (int i = 0; i < 200; ++i) {
-        const double x = (double)i / 200.0;
-        const double y = std::sin((double)i * 0.37);
-        const double z = std::cos((double)i * 0.91);
+This project is designed to reflect the core idea behind Lie-theory-based degeneracy detection in LiDAR scan alignment:
 
-        Eigen::Vector3d p(x, y, z);
-        Eigen::Vector3d q = p;
-        Eigen::Vector3d n(1.0 / std::sqrt(3.0), 1.0 / std::sqrt(3.0), 1.0 / std::sqrt(3.0));
-        calc.addPointPlane(p, q, n);
-    }
+- each point-to-plane correspondence produces a 1x6 Jacobian in the SE(3) tangent space,
+- accumulating J^T J yields the information matrix,
+- eigenvalue inspection reveals near-singular directions (degenerate modes),
+- the smallest eigenmodes are classified as rotation-dominated, translation-dominated, or mixed.
 
-    const auto result = calc.analyzeDegeneracy(1e-3, 1e-9);
+## Repository structure
 
-    // Basic smoke test: information matrix should be positive semidefinite
-    const auto info = result.information;
-    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>> solver(info);
-    const auto lambdas = solver.eigenvalues();
+- `include/info_matrix.h`: API and data structures.
+- `src/info_matrix.cpp`: point-to-plane information accumulation and degeneracy analysis.
+- `src/synthetic.cpp`: synthetic validation scenes for planar and non-planar motions.
+- `tests/test_info_matrix.cpp`: smoke tests for the information matrix.
+- `CMakeLists.txt`: build configuration.
 
-    if (lambdas.minCoeff() < 0.0) {
-        std::cerr << "Information matrix not positive semidefinite.\n";
-        return 1;
-    }
+## Build
 
-    std::cout << "LiLi info-matrix tests passed.\n";
-    return 0;
-}
+```bash
+mkdir -p build
+cd build
+cmake ..
+cmake --build .
+```
+
+## Run
+
+```bash
+./lili_synthetic
+ctest --output-on-failure
+```
+
+## Notes
+
+The Jacobian used here is based on the residual
+
+r = n^T (R p + t - q)
+
+with the SE(3) perturbation expressed in the tangent space, giving
+
+J = [ n^T (-R [p]_x),  n^T ]
+
+This is intentionally simple and reference-oriented: it focuses on the degeneracy detection logic rather than a full SLAM pipeline.
