@@ -92,7 +92,13 @@ QualityResult alignmentQuality(
         if (dim > 0) {
             const Eigen::VectorXd c =
                 opt.coefficient_scale * halton(i, dim);
-            delta = basis * c;
+            // Normalize basis columns to compare directions only (per handover.md)
+            Eigen::Matrix<double, 6, Eigen::Dynamic> Bn = basis;
+            for (int j = 0; j < Bn.cols(); ++j) {
+                double n = Bn.col(j).norm();
+                if (n > 1e-12) Bn.col(j) /= n;
+            }
+            delta = Bn * c;
         }
         const PointCloud extended = local.transformed(P_opt * expSE3(delta));
         collectNearestDistances(extended, index, radius, distances);
@@ -114,23 +120,29 @@ QualityResult alignmentQualitySingle(const PointCloud& local,
 }
 
 std::vector<double> principalAnglesDeg(
-    const Eigen::Matrix<double, 6, Eigen::Dynamic>& A,
-    const Eigen::Matrix<double, 6, Eigen::Dynamic>& B, double length_scale) {
+    const Eigen::Matrix<double, 6, Eigen::Dynamic>& A_in,
+    const Eigen::Matrix<double, 6, Eigen::Dynamic>& B_in, double length_scale) {
     std::vector<double> angles;
-    if (A.cols() == 0 || B.cols() == 0) { return angles; }
+    if (A_in.cols() == 0 || B_in.cols() == 0) { return angles; }
 
-    const auto scaleRotation = [length_scale](Eigen::Matrix<double, 6, Eigen::Dynamic> M) {
-        M.topRows<3>() *= length_scale;
-        return M;
+    // Normalize columns in scaled space to compare directions only
+    auto normalizeCols = [length_scale](Eigen::Matrix<double, 6, Eigen::Dynamic> M) {
+        Eigen::Matrix<double, 6, Eigen::Dynamic> N = M;
+        if (length_scale != 0.0) { N.topRows<3>() *= length_scale; }
+        for (int j = 0; j < N.cols(); ++j) {
+            double n = N.col(j).norm();
+            if (n > 1e-12) N.col(j) /= n;
+        }
+        return N;
     };
-    const Eigen::MatrixXd Aq =
-        scaleRotation(A).householderQr().householderQ();
-    const Eigen::MatrixXd Bq =
-        scaleRotation(B).householderQr().householderQ();
+    const Eigen::MatrixXd An = normalizeCols(A_in);
+    const Eigen::MatrixXd Bn = normalizeCols(B_in);
 
-    // householderQ() returns the full square Q, so the comparison dimension has
-    // to come from the basis sizes, not from Aq/Bq.
-    const int k = std::min<int>(static_cast<int>(A.cols()), static_cast<int>(B.cols()));
+    const Eigen::MatrixXd Aq = An.householderQr().householderQ();
+    const Eigen::MatrixXd Bq = Bn.householderQr().householderQ();
+
+    const int k = std::min<int>(static_cast<int>(A_in.cols()), static_cast<int>(B_in.cols()));
+    if (k <= 0) return angles;
     const Eigen::MatrixXd M = Aq.leftCols(k).transpose() * Bq.leftCols(k);
     Eigen::JacobiSVD<Eigen::MatrixXd> svd(M);
     for (int i = 0; i < k; ++i) {
@@ -143,7 +155,7 @@ std::vector<double> principalAnglesDeg(
 
 SubspaceDeviation deviationFromSubspace(
     const Vector6d& twist,
-    const Eigen::Matrix<double, 6, Eigen::Dynamic>& basis,
+    const Eigen::Matrix<double, 6, Eigen::Dynamic>& basis_in,
     double length_scale) {
     SubspaceDeviation out;
     Vector6d scaled = twist;
@@ -151,16 +163,20 @@ SubspaceDeviation deviationFromSubspace(
     out.total = scaled.norm();
     if (out.total == 0.0) { return out; }
 
-    if (basis.cols() == 0) {
+    if (basis_in.cols() == 0) {
         out.orthogonal = out.total;
         out.fraction = 1.0;
         return out;
     }
 
-    Eigen::Matrix<double, 6, Eigen::Dynamic> scaled_basis = basis;
-    scaled_basis.topRows<3>() *= length_scale;
-    const Eigen::MatrixXd q_full = scaled_basis.householderQr().householderQ();
-    const Eigen::MatrixXd Q = q_full.leftCols(static_cast<int>(basis.cols()));
+    Eigen::Matrix<double, 6, Eigen::Dynamic> scaled_basis = basis_in;
+    if (length_scale != 0.0) { scaled_basis.topRows<3>() *= length_scale; }
+    for (int j = 0; j < scaled_basis.cols(); ++j) {
+        double n = scaled_basis.col(j).norm();
+        if (n > 1e-12) scaled_basis.col(j) /= n;
+    }
+    Eigen::MatrixXd q_full = scaled_basis.householderQr().householderQ();
+    Eigen::MatrixXd Q = q_full.leftCols(static_cast<int>(scaled_basis.cols()));
     const Vector6d projection = Q * (Q.transpose() * scaled);
     out.orthogonal = (scaled - projection).norm();
     out.fraction = out.orthogonal / out.total;

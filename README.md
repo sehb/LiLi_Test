@@ -34,7 +34,8 @@ cmake --build .
 ```bash
 ./lili_synthetic
 ./lili_scenes                 # M1 scene acceptance report (--noise 0.02 for noise)
-./lili_eval                   # M2: shared ICP + Zhang baseline vs analytic truth
+./lili_eval                   # M3: Zhang vs LiLi vs re-association ablation
+./lili_experiment             # M4: noise/k/threshold matrix -> CSV (--out FILE)
 ctest --output-on-failure
 ```
 
@@ -62,15 +63,28 @@ This project is intentionally compact and reference-oriented. The natural next s
 
 ## Relation to the LiLi paper
 
-The reference paper is `docs/2609.17145v2.pdf`. This repository covers only the
-static, Hessian-style part of the analysis: residual Jacobians, information-matrix
-accumulation, and eigenvalue/condition-number degeneracy classification.
+The reference paper is `docs/2609.17145v2.pdf`. The repository implements both
+detectors it compares:
 
-The paper's contribution is a *perturbation-based* detector that is not implemented
-here yet: adaptive perturbation scaling from the re-association parameter `k`,
-per-perturbation re-optimization, `T_degeneracy = P_opt^-1 · P_perturbed`, twist
-extraction via `log(T)`, a PCA degeneracy-subspace basis with ℓ1 sparsification, and
-the extended-scan alignment-quality metric `Q` (Eq. 8–10).
+- the static, Hessian-style method of Zhang (`src/zhang_detector.cpp`):
+  residual Jacobians, information-matrix accumulation, and eigenvalue
+  degeneracy classification; and
+- the paper's perturbation-based LiLi detector (`src/lili_detector.cpp`):
+  adaptive perturbation scaling from the re-association parameter `k`,
+  axis-aligned translation+rotation couple perturbations, per-perturbation
+  re-optimization, `T_degeneracy = P_opt^-1 · P_perturbed`, twist extraction via
+  `log(T)`, a `τ_displacement` gate, a PCA degeneracy-subspace basis
+  (Eq. 13, keeping eigenvalues *above* `τ_PCA`), and ℓ1 sparsification (Eq. 14).
 
-See `docs/validation_plan.md` for the plan to independently validate the paper's
-algorithm on synthetic data.
+The extended-scan alignment-quality metric `Q` (Eq. 8–10) is implemented in
+`src/eval_quality.cpp`. On the synthetic scenes the LiLi subspace matches the
+analytic ground truth to ≤ 0.11° (max principal angle) in the noise-free case
+and reports no false positive on the non-degenerate control (`ctest`,
+`lili_detector_tests`).
+
+The comparative claim of the paper (≈50 % lower alignment error than the
+Hessian baseline under noise) is **not** reproduced on this synthetic benchmark,
+because the Hessian baseline does not fail here; the re-association mechanism
+behind LiLi is nevertheless confirmed by a freezing-correspondence ablation.
+See `docs/m4_results.md` for the full results and `docs/validation_plan.md` for
+the validation plan. Implementation notes are in `docs/handover_lili_m3.md`.

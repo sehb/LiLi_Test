@@ -27,6 +27,10 @@ struct IcpOptions {
     double normal_agreement = 0.5;
     double rotation_tolerance = 1e-8;     // rad
     double translation_tolerance = 1e-8;  // m
+    // When false the association is computed once at the initial pose and then
+    // frozen for every iteration/candidate. Used as the data-reassociation
+    // ablation (paper hypothesis H3).
+    bool reassociate = true;
 };
 
 struct IcpResult {

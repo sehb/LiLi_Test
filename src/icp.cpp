@@ -80,24 +80,23 @@ void accumulate(const PointCloud& local, const PointCloud& reference,
     }
 }
 
-// One association + accumulation pass; returns the mean squared residual, which
-// is the quantity the Levenberg-Marquardt accept/reject test compares.
-bool evaluateAt(const PointCloud& local, const PointCloud& reference,
-                const GridIndex& index, const SE3& pose, const IcpOptions& options,
-                Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* g,
-                double* cost, int* count) {
-    const Association assoc = buildAssociation(local, reference, index, pose, options);
+// Accumulation at a fixed pose for a given (possibly frozen) association. The
+// mean squared residual is the quantity the Levenberg-Marquardt accept/reject
+// test compares.
+void computeSystem(const PointCloud& local, const PointCloud& reference,
+                   const Association& assoc, const SE3& pose,
+                   Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* g,
+                   double* cost, int* count) {
     *count = static_cast<int>(assoc.local_indices.size());
     if (*count < 6) {
         H->setZero();
         g->setZero();
         *cost = std::numeric_limits<double>::infinity();
-        return false;
+        return;
     }
     double sse = 0.0;
     accumulate(local, reference, assoc, pose, H, g, &sse);
     *cost = sse / static_cast<double>(*count);
-    return true;
 }
 
 double meanDiagonal(const Eigen::Matrix<double, 6, 6>& H) {
@@ -119,14 +118,25 @@ IcpResult pointToPlaneIcp(const PointCloud& local, const PointCloud& reference,
 
     result.pose = initial;
     double lambda = -1.0;
+    Association frozen;
+    bool have_frozen = false;
 
     for (int iter = 0; iter < options.max_iterations; ++iter) {
+        if (!options.reassociate && !have_frozen) {
+            frozen = buildAssociation(local, reference, index, result.pose, options);
+            have_frozen = true;
+        }
+        const Association assoc =
+            options.reassociate
+                ? buildAssociation(local, reference, index, result.pose, options)
+                : frozen;
+
         Eigen::Matrix<double, 6, 6> H;
         Eigen::Matrix<double, 6, 1> g;
         double cost = 0.0;
         int count = 0;
-        if (!evaluateAt(local, reference, index, result.pose, options, &H, &g, &cost,
-                        &count)) {
+        computeSystem(local, reference, assoc, result.pose, &H, &g, &cost, &count);
+        if (count < 6) {
             result.iterations = iter;
             break;  // too few correspondences to constrain anything
         }
@@ -150,13 +160,17 @@ IcpResult pointToPlaneIcp(const PointCloud& local, const PointCloud& reference,
             if (!delta.allFinite()) { lambda *= 10.0; continue; }
 
             const SE3 candidate = result.pose * expSE3(delta);
+            const Association cand_assoc =
+                options.reassociate
+                    ? buildAssociation(local, reference, index, candidate, options)
+                    : frozen;
             Eigen::Matrix<double, 6, 6> Hc;
             Eigen::Matrix<double, 6, 1> gc;
             double cost_c = 0.0;
             int count_c = 0;
-            if (!evaluateAt(local, reference, index, candidate, options, &Hc, &gc,
-                            &cost_c, &count_c) ||
-                cost_c > cost) {
+            computeSystem(local, reference, cand_assoc, candidate, &Hc, &gc, &cost_c,
+                          &count_c);
+            if (count_c < 6 || cost_c > cost) {
                 lambda *= 10.0;
                 continue;
             }
@@ -179,11 +193,18 @@ IcpResult pointToPlaneIcp(const PointCloud& local, const PointCloud& reference,
 
     // Re-evaluate at the final pose so the returned information matrix and
     // statistics describe exactly the returned transform.
+    const Association final_assoc =
+        options.reassociate
+            ? buildAssociation(local, reference, index, result.pose, options)
+            : (have_frozen ? frozen
+                           : buildAssociation(local, reference, index, result.pose,
+                                              options));
     Eigen::Matrix<double, 6, 1> g;
     double cost = 0.0;
     int count = 0;
-    if (evaluateAt(local, reference, index, result.pose, options, &result.information,
-                   &g, &cost, &count)) {
+    computeSystem(local, reference, final_assoc, result.pose, &result.information, &g,
+                  &cost, &count);
+    if (count >= 6) {
         result.correspondences = count;
         result.rms = std::sqrt(cost);
     } else {

@@ -1,8 +1,12 @@
-// M2 driver: register every scene with the shared ICP, then compare the
-// Hessian-based (Zhang) detector against the analytically known degeneracy
-// subspace using the paper's own metric Q.
+// M3 driver: register every scene with the shared ICP, then compare three
+// detectors against the analytically known degeneracy subspace using the
+// paper's own metric Q:
+//   - the Hessian-based Zhang baseline,
+//   - the perturbation-based LiLi detector,
+//   - LiLi with frozen correspondences (the H3 re-association ablation).
 
 #include <Eigen/Dense>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -13,11 +17,13 @@
 #include "detectors.h"
 #include "eval_quality.h"
 #include "icp.h"
+#include "lili_detector.h"
 #include "scenes.h"
 
 using lili::DetectorResult;
 using lili::IcpOptions;
 using lili::IcpResult;
+using lili::LiliOptions;
 using lili::Scene;
 using lili::SceneOptions;
 using lili::SE3;
@@ -48,24 +54,31 @@ Eigen::Matrix<double, 6, Eigen::Dynamic> controlDirection(
     return Q.rightCols(6 - static_cast<int>(truth.cols())).col(0);
 }
 
-struct SceneOutcome {
+// Max principal angle in degrees between a detected basis and the truth, using
+// the scene's characteristic length; 0 when the scene is non-degenerate.
+double maxAngleDeg(const Eigen::Matrix<double, 6, Eigen::Dynamic>& basis,
+                   const Eigen::Matrix<double, 6, Eigen::Dynamic>& truth,
+                   double length_scale) {
+    if (truth.cols() == 0 || basis.cols() == 0) { return 0.0; }
+    const std::vector<double> angles =
+        lili::principalAnglesDeg(basis, truth, length_scale);
+    return angles.empty() ? 90.0 : angles.front();
+}
+
+struct Row {
     std::string name;
-    bool icp_ok = false;
-    bool truth_dim_ok = false;
     int true_dim = 0;
+    bool icp_ok = false;
     int zhang_dim = 0;
-    double rot_err_deg = 0.0;
-    double trans_err = 0.0;
-    double err_total = 0.0;
-    double err_orthogonal_fraction = 0.0;
-    int iterations = 0;
-    bool converged = false;
-    double condition_number = 0.0;
+    int lili_dim = 0;
+    int ablated_dim = 0;
+    double zhang_angle = 0.0;
+    double lili_angle = 0.0;
+    double ablated_angle = 0.0;
     double q_true = 0.0;
     double q_zhang = 0.0;
-    double q_control = 0.0;
-    double q_plain = 0.0;
-    double max_angle_deg = 0.0;
+    double q_lili = 0.0;
+    double q_ablated = 0.0;
 };
 
 }  // namespace
@@ -73,9 +86,8 @@ struct SceneOutcome {
 int main(int argc, char** argv) {
     SceneOptions scene_opt;
     IcpOptions icp_opt;
+    LiliOptions lili_opt;
     int q_samples = 32;
-    double pose_tol_trans = 0.01;
-    double pose_tol_rot = 0.5;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -91,10 +103,17 @@ int main(int argc, char** argv) {
             scene_opt.local_spacing_scale = std::atof(argv[++i]);
         } else if (arg == "--local-phase" && i + 1 < argc) {
             scene_opt.local_phase = std::atof(argv[++i]);
+        } else if (arg == "--k" && i + 1 < argc) {
+            lili_opt.reassociation_k = std::atoi(argv[++i]);
+        } else if (arg == "--tau-disp" && i + 1 < argc) {
+            lili_opt.tau_displacement = std::atof(argv[++i]);
+        } else if (arg == "--pca-rel" && i + 1 < argc) {
+            lili_opt.pca_rel_threshold = std::atof(argv[++i]);
         } else {
             std::cerr << "Usage: " << argv[0]
                       << " [--noise s] [--spacing h] [--corr d] [--q-samples n]"
-                      << " [--local-scale k] [--local-phase p]\n";
+                      << " [--local-scale k] [--local-phase p] [--k k]"
+                      << " [--tau-disp t] [--pca-rel r]\n";
             return 1;
         }
     }
@@ -103,10 +122,9 @@ int main(int argc, char** argv) {
     ext.n_samples = q_samples;
 
     std::cout << std::fixed << std::setprecision(4);
-    std::cout << "ICP + Zhang baseline (noise sigma = " << scene_opt.noise_sigma
-              << ", spacing = " << scene_opt.spacing
-              << ", max correspondence = " << icp_opt.max_correspondence_distance
-              << ")\n";
+    std::cout << "M3 comparison (noise sigma = " << scene_opt.noise_sigma
+              << ", spacing = " << scene_opt.spacing << ", k = "
+              << lili_opt.reassociation_k << ")\n";
     std::cout << "local view sampling: scale = " << scene_opt.local_spacing_scale
               << ", phase = " << scene_opt.local_phase
               << (scene_opt.local_spacing_scale == 1.0 && scene_opt.local_phase == 0.0
@@ -114,92 +132,98 @@ int main(int argc, char** argv) {
                       : "  (independently sampled)")
               << "\n\n";
 
-    std::vector<SceneOutcome> outcomes;
+    std::vector<Row> rows;
+    int icp_failures = 0;
     for (const Scene& scene : lili::makeAllScenes(scene_opt)) {
-        SceneOutcome out;
-        out.name = scene.name;
-        out.true_dim = static_cast<int>(scene.true_basis.cols());
+        Row row;
+        row.name = scene.name;
+        row.true_dim = static_cast<int>(scene.true_basis.cols());
 
         const IcpResult icp =
             lili::pointToPlaneIcp(scene.local, scene.reference, scene.P_init, icp_opt);
-        out.iterations = icp.iterations;
-        out.converged = icp.converged;
-        out.rot_err_deg = rotationErrorDeg(icp.pose, scene.P_gt);
-        out.trans_err = translationError(icp.pose, scene.P_gt);
-
-        // A degenerate scene does not pin down the pose, so the meaningful
-        // acceptance test is that the pose error lies in the known subspace
-        // (or, for the non-degenerate control, that it is essentially zero).
         const double length_scale = characteristicLength(scene.local);
         const lili::Vector6d err = logSE3(scene.P_gt.inverse() * icp.pose);
         const auto dev =
             lili::deviationFromSubspace(err, scene.true_basis, length_scale);
-        out.err_total = dev.total;
-        out.err_orthogonal_fraction = dev.fraction;
         if (scene_opt.noise_sigma > 0.0) {
-            // With noise the pose error spreads over every weakly constrained
-            // direction, so only boundedness is checkable.
-            out.icp_ok = icp.converged && dev.total < 0.25;
+            row.icp_ok = icp.converged && dev.total < 0.25;
         } else {
-            out.icp_ok = icp.converged &&
+            row.icp_ok = icp.converged &&
                          (scene.true_basis.cols() == 0
-                              ? dev.total < pose_tol_trans
+                              ? dev.total < 0.01
                               : dev.fraction < 0.10);
         }
+        if (!row.icp_ok) { ++icp_failures; }
 
+        // Detectors.
         const DetectorResult zhang = lili::zhangDetector(icp.information);
-        out.zhang_dim = static_cast<int>(zhang.basis.cols());
-        out.condition_number = zhang.condition_number;
-        out.truth_dim_ok = (out.zhang_dim == out.true_dim);
+        const DetectorResult li = lili::liliDetector(
+            scene.local, scene.reference, icp.pose, icp.information, lili_opt);
+        LiliOptions ablated = lili_opt;
+        ablated.icp_options.reassociate = false;
+        DetectorResult li_abl = lili::liliDetector(
+            scene.local, scene.reference, icp.pose, icp.information, ablated);
 
-        const auto q_plain =
-            lili::alignmentQualitySingle(scene.local, scene.reference, icp.pose);
-        const auto q_true = lili::alignmentQuality(scene.local, scene.reference,
-                                                   icp.pose, scene.true_basis, ext);
-        const auto q_zhang = lili::alignmentQuality(scene.local, scene.reference,
-                                                    icp.pose, zhang.basis, ext);
-        const auto q_control = lili::alignmentQuality(
-            scene.local, scene.reference, icp.pose, controlDirection(scene.true_basis), ext);
-        out.q_plain = q_plain.median;
-        out.q_true = q_true.median;
-        out.q_zhang = q_zhang.median;
-        out.q_control = q_control.median;
+        row.zhang_dim = static_cast<int>(zhang.basis.cols());
+        row.lili_dim = static_cast<int>(li.basis.cols());
+        row.ablated_dim = static_cast<int>(li_abl.basis.cols());
+        row.zhang_angle = maxAngleDeg(zhang.basis, scene.true_basis, length_scale);
+        row.lili_angle = maxAngleDeg(li.basis, scene.true_basis, length_scale);
+        row.ablated_angle = maxAngleDeg(li_abl.basis, scene.true_basis, length_scale);
 
-        const auto angles =
-            lili::principalAnglesDeg(zhang.basis, scene.true_basis, length_scale);
-        out.max_angle_deg = angles.empty() ? 90.0 : angles.front();
-        if (out.true_dim == 0) { out.max_angle_deg = 0.0; }
+        row.q_true = lili::alignmentQuality(scene.local, scene.reference, icp.pose,
+                                            scene.true_basis, ext)
+                         .median;
+        row.q_zhang = lili::alignmentQuality(scene.local, scene.reference, icp.pose,
+                                             zhang.basis, ext)
+                          .median;
+        row.q_lili = lili::alignmentQuality(scene.local, scene.reference, icp.pose,
+                                            li.basis, ext)
+                         .median;
+        row.q_ablated = lili::alignmentQuality(scene.local, scene.reference, icp.pose,
+                                               li_abl.basis, ext)
+                            .median;
 
         std::cout << "=== " << scene.name << " ===\n";
-        std::cout << "  ICP: iter=" << out.iterations
-                  << " converged=" << (out.converged ? "yes" : "no")
-                  << " corr=" << icp.correspondences << " rms=" << icp.rms << "\n";
-        std::cout << "  pose error vs P_gt: rot=" << out.rot_err_deg
-                  << " deg, trans=" << out.trans_err << " m\n";
-        std::cout << "  pose error twist: |err|=" << out.err_total
-                  << "  fraction outside true subspace=" << out.err_orthogonal_fraction
+        std::cout << "  dims: true=" << row.true_dim << " zhang=" << row.zhang_dim
+                  << " lili=" << row.lili_dim << " lili(ablated)=" << row.ablated_dim
                   << "\n";
-        std::cout << "  expected dim=" << out.true_dim
-                  << "  Zhang dim=" << out.zhang_dim
-                  << "  cond=" << out.condition_number << "\n";
-        std::cout << "  Q: plain=" << out.q_plain << " true=" << out.q_true
-                  << " zhang=" << out.q_zhang << " control=" << out.q_control << "\n";
-        std::cout << "  max principal angle (Zhang vs truth) = " << out.max_angle_deg
+        std::cout << "  max principal angle: zhang=" << row.zhang_angle
+                  << " lili=" << row.lili_angle << " ablated=" << row.ablated_angle
                   << " deg\n";
-        std::cout << "  ICP " << (out.icp_ok ? "OK" : "FAILED")
-                  << " | dim match " << (out.truth_dim_ok ? "yes" : "no") << "\n\n";
-
-        outcomes.push_back(out);
+        std::cout << "  Q: true=" << row.q_true << " zhang=" << row.q_zhang
+                  << " lili=" << row.q_lili << " ablated=" << row.q_ablated << "\n\n";
+        rows.push_back(row);
     }
 
-    int icp_failures = 0, dim_mismatch = 0;
-    for (const auto& o : outcomes) {
-        if (!o.icp_ok) { ++icp_failures; }
-        if (!o.truth_dim_ok) { ++dim_mismatch; }
+    // Compact comparison table + H2-style summary.
+    std::cout << std::setw(20) << "scene" << std::setw(6) << "tru" << std::setw(6)
+              << "zD" << std::setw(6) << "lD" << std::setw(8) << "zAng" << std::setw(8)
+              << "lAng" << std::setw(9) << "Qzhang" << std::setw(9) << "Qlili"
+              << std::setw(10) << "Qablated" << "\n";
+    int lili_better = 0;
+    for (const Row& r : rows) {
+        std::cout << std::setw(20) << r.name << std::setw(6) << r.true_dim
+                  << std::setw(6) << r.zhang_dim << std::setw(6) << r.lili_dim
+                  << std::setw(8) << r.zhang_angle << std::setw(8) << r.lili_angle
+                  << std::setw(9) << r.q_zhang << std::setw(9) << r.q_lili
+                  << std::setw(10) << r.q_ablated << "\n";
+        if (r.true_dim > 0 && r.q_lili <= 0.5 * r.q_zhang) { ++lili_better; }
     }
-    std::cout << "M2 acceptance: ICP " << (icp_failures == 0 ? "PASS" : "FAIL")
-              << " (" << icp_failures << " scene(s) failed to register)\n";
-    std::cout << "Zhang dimension match: " << (outcomes.size() - dim_mismatch) << "/"
-              << outcomes.size() << " scenes (mismatches are the finding, not a test failure)\n";
+
+    std::cout << "\nICP " << (icp_failures == 0 ? "PASS" : "FAIL") << " ("
+              << icp_failures << " scene(s) failed to register)\n";
+    if (scene_opt.noise_sigma == 0.0) {
+        std::cout << "H1 (noise-free angle <= 5 deg, LiLi): "
+                  << [&] {
+                       for (const Row& r : rows) {
+                         if (r.true_dim > 0 && r.lili_angle > 5.0) { return "no"; }
+                       }
+                       return "yes";
+                     }()
+                  << "\n";
+    }
+    std::cout << "H2 (Q_lili <= 0.5 Q_zhang): " << lili_better << "/" << rows.size()
+              << " scenes\n";
     return icp_failures == 0 ? 0 : 1;
 }

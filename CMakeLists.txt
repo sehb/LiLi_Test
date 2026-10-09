@@ -16,6 +16,7 @@ add_library(lili_core
     src/eval_quality.cpp
     src/icp.cpp
     src/zhang_detector.cpp
+    src/lili_detector.cpp
 )
 target_include_directories(lili_core
     PUBLIC
@@ -35,6 +36,9 @@ target_link_libraries(lili_scenes PRIVATE lili_core)
 
 add_executable(lili_eval src/icp_eval.cpp)
 target_link_libraries(lili_eval PRIVATE lili_core)
+
+add_executable(lili_experiment src/experiment_main.cpp)
+target_link_libraries(lili_experiment PRIVATE lili_core)
 
 enable_testing()
 add_executable(lili_tests tests/test_info_matrix.cpp)
@@ -57,6 +61,17 @@ add_executable(lili_icp_tests tests/test_icp.cpp)
 target_link_libraries(lili_icp_tests PRIVATE lili_core)
 add_test(NAME lili_icp_tests COMMAND lili_icp_tests)
 
+add_executable(lili_detector_tests tests/test_lili.cpp)
+target_link_libraries(lili_detector_tests PRIVATE lili_core)
+add_test(NAME lili_detector_tests COMMAND lili_detector_tests)
+
 # M2 acceptance: the shared ICP must place every scene inside its known
 # degeneracy subspace, and the Zhang baseline must be reported against it.
 add_test(NAME lili_m2_baseline COMMAND lili_eval --q-samples 8)
+
+# M3/M4: full comparison driver (Zhang vs LiLi vs re-association ablation) and a
+# smoke run of the experiment matrix.
+add_test(NAME lili_m3_comparison
+         COMMAND lili_eval --q-samples 8 --local-scale 2 --local-phase 0.5)
+add_test(NAME lili_experiment_smoke
+         COMMAND lili_experiment --only-k --seeds 1 --q-samples 4)
