@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,9 @@ struct DegeneracyResult {
     Eigen::Matrix<double, 6, 6> eigenvectors;
     std::vector<int> small_indices;
     std::vector<std::string> small_classification;
+    double min_eigenvalue = 0.0;
+    double max_eigenvalue = 0.0;
+    double condition_number = std::numeric_limits<double>::infinity();
 };
 
 class InformationMatrixCalculator {
@@ -30,9 +34,12 @@ public:
 
     Eigen::Matrix<double, 6, 6> informationMatrix() const;
 
-    // classify small eigenvalues by relative or absolute thresholds
+    // Lower eigenvalues indicate a weakly observable direction.
     DegeneracyResult analyzeDegeneracy(double rel_threshold = 1e-3,
                                       double abs_threshold = 1e-9) const;
+
+    // Condition number of the accumulated information matrix.
+    double conditionNumber() const;
 
 private:
     Eigen::Matrix<double, 6, 6> info_;

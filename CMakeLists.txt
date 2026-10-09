@@ -27,6 +27,12 @@ add_executable(lili_synthetic
 
 target_link_libraries(lili_synthetic PRIVATE lili_core)
 
+add_executable(lili_cli
+    src/cli.cpp
+)
+
+target_link_libraries(lili_cli PRIVATE lili_core)
+
 enable_testing()
 add_executable(lili_tests
     tests/test_info_matrix.cpp
